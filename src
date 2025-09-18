@@ -1,0 +1,122 @@
+/***** CONFIG *****/
+const TEMPLATE_ID = '1eaR8WPYqh40RLgTpdOp6jWN_p0k7qXF9aNOkUkM4w7E';  // your doc ID
+const OUTPUT_FOLDER_ID = '1sj3iFoCZjv_jU54JY_a5NS7sS40T3SOf';          // your output folder ID
+const SENDER_EMAIL = 'mahadahmed1218@gmail.com';                         // put your Gmail here
+const TIMEZONE = Session.getScriptTimeZone() || 'Australia/Sydney';
+
+/***** MAIN: runs on form submit *****/
+function onFormSubmit(e) {
+  try {
+    const sheet = e.range.getSheet();
+    const row = e.range.getRow();
+    const values = e.values; 
+    // Form order:
+    // [Timestamp, Client Name, Client Email, Service, Quantity, Unit Price, Tax %, Invoice Date, Due Date, Notes]
+    const [
+      timestamp, clientName, clientEmail, service, qtyStr, unitStr, taxRateStr, invoiceDateRaw, dueDateRaw, notes
+    ] = values;
+
+    const qty = Number(qtyStr) || 0;
+    const unit = Number(unitStr) || 0;
+    const taxRate = Number(taxRateStr) || 0;
+
+    const subtotal = round2(qty * unit);
+    const tax = round2(subtotal * (taxRate / 100));
+    const total = round2(subtotal + tax);
+
+    const invoiceDate = toDateString_(invoiceDateRaw);
+    const dueDate = toDateString_(dueDateRaw);
+
+    const invoiceNumber = generateInvoiceNumber_();
+
+    const pdfFile = buildInvoicePdf_({
+      invoiceNumber, clientName, clientEmail, service,
+      qty, unit, subtotal, taxRate, tax, total, invoiceDate, dueDate, notes
+    });
+
+    GmailApp.sendEmail(
+  clientEmail,
+  `Invoice ${invoiceNumber}`,
+  `Hi ${clientName},
+
+Please find attached invoice ${invoiceNumber}.
+
+Total: $${total}
+
+Regards,
+Mahad Ahmed
+MA Automation Services
+${SENDER_EMAIL}`,
+  { attachments: [pdfFile.getAs(MimeType.PDF)], cc: SENDER_EMAIL, name: 'Invoicing Bot' }
+);
+    const lastCol = sheet.getLastColumn();
+    sheet.getRange(row, lastCol - 3).setValue(invoiceNumber);
+    sheet.getRange(row, lastCol - 2).setValue(pdfFile.getUrl());
+    sheet.getRange(row, lastCol - 1).setValue('SENT ' + new Date());
+
+  } catch (err) {
+    const sheet = SpreadsheetApp.getActiveSheet();
+    const row = e.range.getRow();
+    const lastCol = sheet.getLastColumn();
+    sheet.getRange(row, lastCol).setValue(String(err));
+    throw err;
+  }
+}
+
+/***** HELPERS *****/
+function buildInvoicePdf_(data) {
+  const folder = DriveApp.getFolderById(OUTPUT_FOLDER_ID);
+  const template = DriveApp.getFileById(TEMPLATE_ID);
+  const copy = template.makeCopy(`Invoice ${data.invoiceNumber}`, folder);
+  const doc = DocumentApp.openById(copy.getId());
+  const body = doc.getBody();
+
+  body.replaceText('{{INVOICE_NUMBER}}', data.invoiceNumber);
+  body.replaceText('{{CLIENT_NAME}}', data.clientName);
+  body.replaceText('{{CLIENT_EMAIL}}', data.clientEmail);
+  body.replaceText('{{INVOICE_DATE}}', data.invoiceDate);
+  body.replaceText('{{DUE_DATE}}', data.dueDate);
+  body.replaceText('{{SERVICE}}', data.service);
+  body.replaceText('{{QTY}}', String(data.qty));
+  body.replaceText('{{UNIT_PRICE}}', String(data.unit));
+  body.replaceText('{{SUBTOTAL}}', String(data.subtotal));
+  body.replaceText('{{TAX_RATE}}', String(data.taxRate));
+  body.replaceText('{{TAX}}', String(data.tax));
+  body.replaceText('{{TOTAL}}', String(data.total));
+  body.replaceText('{{NOTES}}', data.notes || '');
+
+  doc.saveAndClose();
+
+  const pdfBlob = DriveApp.getFileById(copy.getId()).getAs(MimeType.PDF);
+  const pdf = folder.createFile(pdfBlob).setName(`Invoice ${data.invoiceNumber}.pdf`);
+  return pdf;
+}
+
+function generateInvoiceNumber_() {
+  const props = PropertiesService.getScriptProperties();
+  const today = Utilities.formatDate(new Date(), TIMEZONE, 'yyyyMMdd');
+  const key = 'COUNTER_' + today;
+  let n = Number(props.getProperty(key) || '0') + 1;
+  props.setProperty(key, String(n));
+  const padded = String(n).padStart(3, '0');
+  return `INV-${today}-${padded}`;
+}
+
+function toDateString_(raw) {
+  let d = raw instanceof Date ? raw : new Date(raw);
+  if (isNaN(d)) d = new Date();
+  return Utilities.formatDate(d, TIMEZONE, 'yyyy-MM-dd');
+}
+
+function round2(x) {
+  return Math.round(Number(x) * 100) / 100;
+}
+
+/***** TEST HELPER *****/
+function testOnLastRow() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const row = sheet.getLastRow();
+  const range = sheet.getRange(row, 1, 1, sheet.getLastColumn());
+  const e = { range, values: range.getValues()[0] };
+  onFormSubmit(e);
+}
